@@ -14,7 +14,7 @@ TypeNo captures your voice, transcribes it locally, and pastes the result into w
 
 Official website: [https://typeno.com](https://typeno.com)
 
-Special thanks to [marswave ai's coli project](https://github.com/nicepkg/coli) for powering local speech recognition.
+Special thanks to [marswave ai's coli project](https://github.com/marswaveai/coli) for powering local speech recognition.
 
 ## How It Works
 
@@ -43,23 +43,23 @@ Current releases are not yet notarized by Apple, so macOS may block the app afte
 Try these steps in order:
 
 1. Right-click `TypeNo.app` in Finder and choose **Open**
-2. If macOS still blocks it, remove the quarantine flag in Terminal:
+2. If you see **System Settings → Privacy & Security → Open Anyway**, use that path
+3. If macOS still blocks it, remove the quarantine flag in Terminal:
 
 ```bash
 xattr -dr com.apple.quarantine "/Applications/TypeNo.app"
 ```
 
-3. Open `TypeNo.app` again
-4. If you do see **System Settings → Privacy & Security → Open Anyway**, you can also use that path, but it may not appear on all systems
+4. Open `TypeNo.app` again
 
 TypeNo will support proper Apple code signing and notarization in a future release.
 
 ### Install the speech engine
 
-TypeNo uses [coli](https://github.com/nicepkg/coli) for local speech recognition:
+TypeNo uses [coli](https://github.com/marswaveai/coli) for local speech recognition:
 
 ```bash
-npm i -g @anthropic-ai/coli
+npm i -g @coli.codes/coli
 ```
 
 ### First Launch
@@ -99,7 +99,6 @@ TypeNo does one thing: voice → text → paste. No extra UI, no preferences, no
 ## Internationalization
 
 - [中文说明](README_CN.md)
-- [日本語の説明](README_JP.md)
 
 ## License
 
