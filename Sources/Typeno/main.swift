@@ -1810,16 +1810,18 @@ final class UpdateService: @unchecked Sendable {
 
         await onProgress(L("Installing update...", "安装更新..."))
 
-        // Unzip
-        let unzip = Process()
-        unzip.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
-        unzip.arguments = ["-o", zipDest.path, "-d", tempDir.path]
-        unzip.standardOutput = FileHandle.nullDevice
-        unzip.standardError = FileHandle.nullDevice
-        try unzip.run()
-        unzip.waitUntilExit()
+        // Use ditto --noqtn to unzip the app bundle — ditto is the macOS-native tool
+        // for copying app bundles and --noqtn prevents quarantine from being propagated
+        // to the extracted app (unlike /usr/bin/unzip which inherits quarantine).
+        let ditto = Process()
+        ditto.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        ditto.arguments = ["-x", "-k", "--noqtn", zipDest.path, tempDir.path]
+        ditto.standardOutput = FileHandle.nullDevice
+        ditto.standardError = FileHandle.nullDevice
+        try ditto.run()
+        ditto.waitUntilExit()
 
-        guard unzip.terminationStatus == 0 else {
+        guard ditto.terminationStatus == 0 else {
             throw UpdateError.unzipFailed
         }
 
@@ -1828,7 +1830,7 @@ final class UpdateService: @unchecked Sendable {
             throw UpdateError.appNotFound
         }
 
-        // Remove quarantine
+        // Belt-and-suspenders: also remove quarantine recursively from the extracted app
         let xattr = Process()
         xattr.executableURL = URL(fileURLWithPath: "/usr/bin/xattr")
         xattr.arguments = ["-rd", "com.apple.quarantine", newAppURL.path]
