@@ -6,6 +6,12 @@ import Foundation
 import SwiftUI
 import UniformTypeIdentifiers
 
+// MARK: - Localization Helper
+
+/// Returns `zh` when the system's first preferred language is Chinese, otherwise `en`.
+func L(_ en: String, _ zh: String) -> String {
+    Locale.preferredLanguages.first.map { $0.hasPrefix("zh") } == true ? zh : en
+}
 
 
 @MainActor
@@ -159,14 +165,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func performUpdate() {
         Task {
-            appState.phase = .updating("Checking for updates...")
+            appState.phase = .updating(L("Checking for updates...", "检查更新..."))
             appState.onOverlayRequest?(true)
 
             guard let release = await updateService.checkForUpdate() else {
+                appState.phase = .updating(L("Already up to date", "已是最新版本"))
+                try? await Task.sleep(for: .seconds(2))
                 appState.phase = .idle
                 appState.onOverlayRequest?(false)
-                // Show brief "up to date" message
-                appState.showError("Already up to date")
                 return
             }
 
@@ -175,7 +181,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.appState.phase = .updating(message)
                 }
             } catch {
-                appState.showError("Update failed: \(error.localizedDescription)")
+                appState.showError(L("Update failed", "更新失败") + ": \(error.localizedDescription)")
             }
         }
     }
@@ -189,15 +195,15 @@ enum PermissionKind: CaseIterable, Hashable {
 
     var title: String {
         switch self {
-        case .microphone: "Microphone"
-        case .accessibility: "Accessibility"
+        case .microphone: L("Microphone", "麦克风")
+        case .accessibility: L("Accessibility", "辅助功能")
         }
     }
 
     var explanation: String {
         switch self {
-        case .microphone: "Required to capture your voice"
-        case .accessibility: "Required to type text into apps"
+        case .microphone: L("Required to capture your voice", "用于捕获语音")
+        case .accessibility: L("Required to type text into apps", "用于向应用输入文字")
         }
     }
 
@@ -222,9 +228,10 @@ enum AppPhase: Equatable {
 
     var subtitle: String {
         switch self {
-        case .idle: "Press Fn to start"
-        case .recording: "Listening..."
-        case .transcribing(let message): message
+        case .idle: L("Press Fn to start", "按 Fn 开始")
+        case .recording: L("Listening...", "录音中...")
+        case .transcribing(let message):
+            message == "Transcribing..." ? L("Transcribing...", "转录中...") : message
         case .done(let text): text
         case .permissions, .missingColi, .installingColi: ""
         case .updating(let message): message
@@ -302,7 +309,7 @@ final class AppState: ObservableObject {
     }
 
     func autoInstallColi() {
-        phase = .installingColi("Installing coli...")
+        phase = .installingColi(L("Installing coli...", "安装中..."))
         onOverlayRequest?(true)
 
         Task {
@@ -350,9 +357,9 @@ final class AppState: ObservableObject {
             Task { @MainActor in
                 let elapsed = Int(Date().timeIntervalSince(startTime))
                 if elapsed >= 100 {
-                    self?.phase = .transcribing("Almost timeout... (\(elapsed)s)")
+                    self?.phase = .transcribing(L("Almost timeout... (\(elapsed)s)", "即将超时...(\(elapsed)s)"))
                 } else if elapsed >= 10 {
-                    self?.phase = .transcribing("Transcribing... \(elapsed)s")
+                    self?.phase = .transcribing(L("Transcribing... \(elapsed)s", "转录中...\(elapsed)s"))
                 }
             }
         }
@@ -434,9 +441,9 @@ final class AppState: ObservableObject {
             Task { @MainActor in
                 let elapsed = Int(Date().timeIntervalSince(startTime))
                 if elapsed >= 100 {
-                    self?.phase = .transcribing("Almost timeout... (\(elapsed)s)")
+                    self?.phase = .transcribing(L("Almost timeout... (\(elapsed)s)", "即将超时...(\(elapsed)s)"))
                 } else if elapsed >= 10 {
-                    self?.phase = .transcribing("Transcribing... \(elapsed)s")
+                    self?.phase = .transcribing(L("Transcribing... \(elapsed)s", "转录中...\(elapsed)s"))
                 }
             }
         }
@@ -452,7 +459,11 @@ final class AppState: ObservableObject {
 
             phase = .done(transcript)
             onOverlayRequest?(true)
-            confirmInsert()
+            // Copy to clipboard (don't paste into another app)
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(transcript, forType: .string)
+            try? await Task.sleep(for: .seconds(2))
+            cancel()
         } catch TypeNoError.coliNotInstalled {
             progressTimer.invalidate()
             showMissingColi()
@@ -1113,25 +1124,32 @@ final class StatusItemController: NSObject {
     private func configureMenu() {
         let menu = NSMenu()
 
-        let recordItem = NSMenuItem(title: "Record  ⌃", action: #selector(toggleRecording), keyEquivalent: "")
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+        let aboutItem = NSMenuItem(title: "TypeNo  v\(version)", action: nil, keyEquivalent: "")
+        aboutItem.isEnabled = false
+        menu.addItem(aboutItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        let recordItem = NSMenuItem(title: L("Record  ⌃", "录音  ⌃"), action: #selector(toggleRecording), keyEquivalent: "")
         recordItem.target = self
         recordItem.tag = 100
         menu.addItem(recordItem)
 
-        let transcribeItem = NSMenuItem(title: "Transcribe File...", action: #selector(transcribeFile), keyEquivalent: "")
+        let transcribeItem = NSMenuItem(title: L("Transcribe File to Clipboard...", "转录文件到剪贴板..."), action: #selector(transcribeFile), keyEquivalent: "")
         transcribeItem.target = self
         menu.addItem(transcribeItem)
 
         menu.addItem(NSMenuItem.separator())
 
-        let updateItem = NSMenuItem(title: "Check for Updates...", action: #selector(checkForUpdates), keyEquivalent: "")
+        let updateItem = NSMenuItem(title: L("Check for Updates...", "检查更新..."), action: #selector(checkForUpdates), keyEquivalent: "")
         updateItem.target = self
         updateItem.tag = 200
         menu.addItem(updateItem)
 
-        menu.addItem(NSMenuItem(title: "Open Privacy Settings", action: #selector(openPrivacySettings), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: L("Open Privacy Settings", "打开隐私设置"), action: #selector(openPrivacySettings), keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
-        menu.addItem(NSMenuItem(title: "Quit TypeNo", action: #selector(quit), keyEquivalent: "q"))
+        menu.addItem(NSMenuItem(title: L("Quit TypeNo", "退出 TypeNo"), action: #selector(quit), keyEquivalent: "q"))
 
         menu.items.forEach { $0.target = self }
         statusItem.menu = menu
@@ -1141,9 +1159,9 @@ final class StatusItemController: NSObject {
         guard let item = statusItem.menu?.item(withTag: 100) else { return }
         switch phase {
         case .recording:
-            item.title = "Stop Recording"
+            item.title = L("Stop Recording", "停止录音")
         default:
-            item.title = "Record"
+            item.title = L("Record", "录音")
         }
     }
 
@@ -1173,7 +1191,7 @@ final class StatusItemController: NSObject {
 
     func setUpdateAvailable(_ version: String) {
         guard let item = statusItem.menu?.item(withTag: 200) else { return }
-        item.title = "Update Available (v\(version))"
+        item.title = L("Update Available (v\(version))", "有新版本 (v\(version))")
     }
 
     @objc private func transcribeFile() {
@@ -1187,7 +1205,7 @@ final class StatusItemController: NSObject {
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
-        panel.message = "Choose an audio file to transcribe"
+        panel.message = "Choose an audio file — result will be copied to clipboard"
 
         if panel.runModal() == .OK, let url = panel.url {
             Task { @MainActor in
@@ -1350,7 +1368,7 @@ struct OverlayView: View {
             }
 
             if case .error = appState.phase {
-                Button("OK") {
+                Button(L("OK", "好")) {
                     appState.onCancel?()
                 }
                 .buttonStyle(.borderless)
@@ -1382,7 +1400,7 @@ struct OverlayView: View {
 
                     Spacer()
 
-                    Button("Open Settings") {
+                    Button(L("Open Settings", "打开设置")) {
                         appState.onPermissionOpen?(kind)
                     }
                     .buttonStyle(.borderedProminent)
@@ -1391,11 +1409,11 @@ struct OverlayView: View {
             }
 
             HStack {
-                Text("Checking automatically...")
+                Text(L("Checking automatically...", "自动检测中..."))
                     .font(.system(size: 11))
                     .foregroundStyle(.tertiary)
                 Spacer()
-                Button("Cancel") {
+                Button(L("Cancel", "取消")) {
                     appState.onCancel?()
                 }
                 .buttonStyle(.borderless)
@@ -1421,9 +1439,9 @@ struct OverlayView: View {
                     .frame(width: 24)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Node.js Required")
+                    Text(L("Node.js Required", "需要 Node.js"))
                         .font(.system(size: 13, weight: .medium))
-                    Text("Install Node.js first, then TypeNo will set up automatically.")
+                    Text(L("Install Node.js first, then TypeNo will set up automatically.", "请先安装 Node.js，TypeNo 将自动配置。"))
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }
@@ -1450,11 +1468,11 @@ struct OverlayView: View {
             }
 
             HStack {
-                Text("Checking automatically...")
+                Text(L("Checking automatically...", "自动检测中..."))
                     .font(.system(size: 11))
                     .foregroundStyle(.tertiary)
                 Spacer()
-                Button("Cancel") {
+                Button(L("Cancel", "取消")) {
                     appState.onCancel?()
                 }
                 .buttonStyle(.borderless)
@@ -1479,7 +1497,7 @@ struct OverlayView: View {
                     .frame(width: 24)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Setting up speech engine")
+                    Text(L("Setting up speech engine", "配置语音引擎"))
                         .font(.system(size: 13, weight: .medium))
                     Text(message)
                         .font(.system(size: 11))
@@ -1546,7 +1564,7 @@ final class UpdateService: @unchecked Sendable {
     }
 
     func downloadAndInstall(from downloadURL: URL, onProgress: @MainActor @Sendable (String) -> Void) async throws {
-        await onProgress("Downloading update...")
+        await onProgress(L("Downloading update...", "下载更新..."))
 
         // Download zip to temp
         let (zipURL, _) = try await URLSession.shared.download(from: downloadURL)
@@ -1559,7 +1577,7 @@ final class UpdateService: @unchecked Sendable {
         }
         try FileManager.default.moveItem(at: zipURL, to: zipDest)
 
-        await onProgress("Installing update...")
+        await onProgress(L("Installing update...", "安装更新..."))
 
         // Unzip
         let unzip = Process()
