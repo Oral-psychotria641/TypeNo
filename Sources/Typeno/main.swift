@@ -89,6 +89,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .missingColi:
             if ColiASRService.isInstalled {
                 appState.hideColiGuidance()
+            } else if ColiASRService.isNpmAvailable {
+                // npm became available (user installed Node), trigger auto-install
+                appState.autoInstallColi()
             }
         default:
             break
@@ -105,7 +108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             appState.confirmInsert()
         case .transcribing, .error:
             appState.cancel()
-        case .permissions, .missingColi, .updating:
+        case .permissions, .missingColi, .installingColi, .updating:
             break
         }
     }
@@ -213,6 +216,7 @@ enum AppPhase: Equatable {
     case done(String)        // transcription result, waiting for user confirm
     case permissions(Set<PermissionKind>)
     case missingColi
+    case installingColi(String) // progress message
     case updating(String)    // progress message
     case error(String)
 
@@ -222,7 +226,7 @@ enum AppPhase: Equatable {
         case .recording: "Listening..."
         case .transcribing: "Transcribing..."
         case .done(let text): text
-        case .permissions, .missingColi: ""
+        case .permissions, .missingColi, .installingColi: ""
         case .updating(let message): message
         case .error(let message): message
         }
@@ -288,8 +292,36 @@ final class AppState: ObservableObject {
     }
 
     func showMissingColi() {
-        phase = .missingColi
+        // If npm is available, auto-install coli instead of showing manual guidance
+        if ColiASRService.isNpmAvailable {
+            autoInstallColi()
+        } else {
+            phase = .missingColi
+            onOverlayRequest?(true)
+        }
+    }
+
+    func autoInstallColi() {
+        phase = .installingColi("Installing coli...")
         onOverlayRequest?(true)
+
+        Task {
+            do {
+                try await ColiASRService.installColi { [weak self] message in
+                    self?.phase = .installingColi(message)
+                }
+                // Verify installation
+                if ColiASRService.isInstalled {
+                    phase = .idle
+                    onOverlayRequest?(false)
+                } else {
+                    // Fallback to manual guidance
+                    phase = .missingColi
+                }
+            } catch {
+                showError("Install failed: \(error.localizedDescription)")
+            }
+        }
     }
 
     func hideColiGuidance() {
@@ -406,6 +438,8 @@ enum TypeNoError: LocalizedError {
     case noRecording
     case emptyTranscript
     case coliNotInstalled
+    case npmNotFound
+    case coliInstallFailed(String)
     case transcriptionFailed(String)
 
     var errorDescription: String? {
@@ -413,6 +447,8 @@ enum TypeNoError: LocalizedError {
         case .noRecording: "No recording"
         case .emptyTranscript: "No speech detected"
         case .coliNotInstalled: "TypeNo needs the local Coli engine. Install it with: npm install -g @marswave/coli"
+        case .npmNotFound: "Node.js is required. Install it from https://nodejs.org"
+        case .coliInstallFailed(let message): "Coli install failed: \(message)"
         case .transcriptionFailed(let message): message
         }
     }
@@ -561,6 +597,72 @@ final class ColiASRService: @unchecked Sendable {
         findColiPath() != nil
     }
 
+    static var isNpmAvailable: Bool {
+        findNpmPath() != nil
+    }
+
+    /// Auto-install coli via npm. Reports progress via callback.
+    static func installColi(onProgress: @MainActor @Sendable @escaping (String) -> Void) async throws {
+        guard let npmPath = findNpmPath() else {
+            throw TypeNoError.npmNotFound
+        }
+
+        await onProgress("Installing coli...")
+
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let process = Process()
+                    process.executableURL = URL(fileURLWithPath: npmPath)
+                    process.arguments = ["install", "-g", "@marswave/coli"]
+
+                    // Set up PATH so npm can find node
+                    let npmDir = (npmPath as NSString).deletingLastPathComponent
+                    let env = ProcessInfo.processInfo.environment
+                    let home = env["HOME"] ?? ""
+                    let extraPaths = [
+                        npmDir,
+                        "/opt/homebrew/bin",
+                        "/usr/local/bin",
+                        home + "/.nvm/current/bin",
+                        home + "/.volta/bin",
+                        home + "/.local/share/fnm/aliases/default/bin"
+                    ]
+                    var processEnv = env
+                    let existingPath = env["PATH"] ?? "/usr/bin:/bin"
+                    processEnv["PATH"] = (extraPaths + [existingPath]).joined(separator: ":")
+                    process.environment = processEnv
+
+                    let stdout = Pipe()
+                    let stderr = Pipe()
+                    process.standardOutput = stdout
+                    process.standardError = stderr
+
+                    try process.run()
+
+                    // 120-second timeout for install
+                    let timeoutItem = DispatchWorkItem {
+                        if process.isRunning { process.terminate() }
+                    }
+                    DispatchQueue.global().asyncAfter(deadline: .now() + 120, execute: timeoutItem)
+
+                    process.waitUntilExit()
+                    timeoutItem.cancel()
+
+                    guard process.terminationStatus == 0 else {
+                        let errorOutput = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                        let msg = errorOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+                        throw TypeNoError.coliInstallFailed(msg.isEmpty ? "npm install failed" : msg)
+                    }
+
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
     private var currentProcess: Process?
     private let processLock = NSLock()
 
@@ -645,6 +747,30 @@ final class ColiASRService: @unchecked Sendable {
                 }
             }
         }
+    }
+
+    static func findNpmPath() -> String? {
+        let env = ProcessInfo.processInfo.environment
+        let home = env["HOME"] ?? ""
+
+        if let pathInEnv = executableInPath(named: "npm", path: env["PATH"]) {
+            return pathInEnv
+        }
+
+        let candidates = [
+            "/opt/homebrew/bin/npm",
+            "/usr/local/bin/npm",
+            home + "/.nvm/current/bin/npm",
+            home + "/.volta/bin/npm",
+            home + "/.local/share/fnm/aliases/default/bin/npm",
+            home + "/.bun/bin/npm"
+        ]
+
+        if let found = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) {
+            return found
+        }
+
+        return resolveViaShell("npm")
     }
 
     private static func findColiPath() -> String? {
@@ -884,7 +1010,7 @@ final class StatusItemController: NSObject {
         case .transcribing: "..."
         case .done: "✓"
         case .updating: "↓"
-        case .permissions, .missingColi: "!"
+        case .permissions, .missingColi, .installingColi: "!"
         case .error: "!"
         }
     }
@@ -1002,6 +1128,9 @@ final class OverlayPanelController {
             } else if case .missingColi = appState.phase {
                 x = frame.maxX - width - 16
                 y = frame.maxY - height - 16
+            } else if case .installingColi = appState.phase {
+                x = frame.maxX - width - 16
+                y = frame.maxY - height - 16
             } else {
                 // Recording/transcription bar: center bottom
                 x = frame.midX - width / 2
@@ -1032,6 +1161,8 @@ struct OverlayView: View {
                 permissionView(missing: missing)
             case .missingColi:
                 missingColiView
+            case .installingColi(let message):
+                installingColiView(message: message)
             case .idle:
                 EmptyView()
             default:
@@ -1140,43 +1271,38 @@ struct OverlayView: View {
     var missingColiView: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 12) {
-                Image(systemName: "waveform.badge.exclamationmark")
+                Image(systemName: "exclamationmark.triangle")
                     .font(.system(size: 16))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.orange)
                     .frame(width: 24)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Install Coli to continue")
+                    Text("Node.js Required")
                         .font(.system(size: 13, weight: .medium))
-                    Text("TypeNo uses the local Coli speech engine.")
+                    Text("Install Node.js first, then TypeNo will set up automatically.")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }
 
                 Spacer()
-
-                Button("Open Guide") {
-                    appState.onColiInstallHelpRequest?()
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
             }
 
             HStack(spacing: 8) {
-                Text("npm install -g @marswave/coli")
+                Text("https://nodejs.org")
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .padding(.leading, 36)
 
                 Button(action: {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString("npm install -g @marswave/coli", forType: .string)
+                    if let url = URL(string: "https://nodejs.org") {
+                        NSWorkspace.shared.open(url)
+                    }
                 }) {
-                    Image(systemName: "doc.on.doc")
+                    Image(systemName: "arrow.up.right.square")
                         .font(.system(size: 10))
                 }
                 .buttonStyle(.borderless)
-                .help("Copy command")
+                .help("Open nodejs.org")
             }
 
             HStack {
@@ -1190,6 +1316,33 @@ struct OverlayView: View {
                 .buttonStyle(.borderless)
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
+            }
+        }
+        .padding(16)
+        .frame(width: 400)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+        )
+    }
+
+    func installingColiView(message: String) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(width: 24)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Setting up speech engine")
+                        .font(.system(size: 13, weight: .medium))
+                    Text(message)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
             }
         }
         .padding(16)
