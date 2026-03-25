@@ -366,16 +366,30 @@ final class AppState: ObservableObject {
     private let asrService = ColiASRService()
     private var currentRecordingURL: URL?
     private var previousApp: NSRunningApplication?
+    private var recordingTimer: Timer?
+    @Published var recordingElapsedSeconds: Int = 0
+
+    var recordingElapsedStr: String {
+        let m = recordingElapsedSeconds / 60
+        let s = recordingElapsedSeconds % 60
+        return String(format: "%d:%02d", m, s)
+    }
 
     func startRecording() throws {
         transcript = ""
         previousApp = NSWorkspace.shared.frontmostApplication
         currentRecordingURL = try recorder.start()
+        recordingElapsedSeconds = 0
+        recordingTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.recordingElapsedSeconds += 1 }
+        }
         phase = .recording
         onOverlayRequest?(true)
     }
 
     func stopRecording() async throws {
+        recordingTimer?.invalidate()
+        recordingTimer = nil
         phase = .transcribing()
         onOverlayRequest?(true)
 
@@ -384,6 +398,8 @@ final class AppState: ObservableObject {
     }
 
     func cancel() {
+        recordingTimer?.invalidate()
+        recordingTimer = nil
         recorder.cancel()
         asrService.cancelCurrentProcess()
         if let currentRecordingURL {
@@ -458,15 +474,13 @@ final class AppState: ObservableObject {
 
         phase = .transcribing()
 
-        // Progress timer: show elapsed time and warn near timeout
+        // Progress timer: only kick in for very long transcriptions (> 2 min)
         let startTime = Date()
-        let progressTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+        let progressTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 let elapsed = Int(Date().timeIntervalSince(startTime))
-                if elapsed >= 100 {
-                    self?.phase = .transcribing(L("Almost timeout... (\(elapsed)s)", "即将超时...(\(elapsed)s)"))
-                } else if elapsed >= 10 {
-                    self?.phase = .transcribing(L("Transcribing... \(elapsed)s", "转录中...\(elapsed)s"))
+                if elapsed >= 120 {
+                    self?.phase = .transcribing(L("Long audio, please wait...", "长音频，请稍候..."))
                 }
             }
         }
@@ -544,13 +558,11 @@ final class AppState: ObservableObject {
         onOverlayRequest?(true)
 
         let startTime = Date()
-        let progressTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+        let progressTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 let elapsed = Int(Date().timeIntervalSince(startTime))
-                if elapsed >= 100 {
-                    self?.phase = .transcribing(L("Almost timeout... (\(elapsed)s)", "即将超时...(\(elapsed)s)"))
-                } else if elapsed >= 10 {
-                    self?.phase = .transcribing(L("Transcribing... \(elapsed)s", "转录中...\(elapsed)s"))
+                if elapsed >= 120 {
+                    self?.phase = .transcribing(L("Long audio, please wait...", "长音频，请稍候..."))
                 }
             }
         }
@@ -911,13 +923,18 @@ final class ColiASRService: @unchecked Sendable {
 
                     try process.run()
 
-                    // 120-second timeout (model download on first run can be slow)
+                    // Dynamic timeout: 2x audio duration, minimum 120s (covers model download on first run)
+                    var audioTimeout: TimeInterval = 120
+                    if let audioFile = try? AVAudioFile(forReading: fileURL) {
+                        let durationSeconds = Double(audioFile.length) / audioFile.processingFormat.sampleRate
+                        audioTimeout = max(120, durationSeconds * 2.0)
+                    }
                     let timeoutItem = DispatchWorkItem {
                         if process.isRunning {
                             process.terminate()
                         }
                     }
-                    DispatchQueue.global().asyncAfter(deadline: .now() + 120, execute: timeoutItem)
+                    DispatchQueue.global().asyncAfter(deadline: .now() + audioTimeout, execute: timeoutItem)
 
                     process.waitUntilExit()
                     timeoutItem.cancel()
@@ -1548,6 +1565,10 @@ struct OverlayView: View {
                     .font(.system(size: 13))
                     .foregroundStyle(.primary)
                     .lineLimit(2)
+            } else if case .recording = appState.phase {
+                Text(appState.recordingElapsedStr)
+                    .font(.system(size: 13, design: .monospaced))
+                    .foregroundStyle(.primary)
             } else {
                 Text(appState.phase.subtitle)
                     .font(.system(size: 13))
