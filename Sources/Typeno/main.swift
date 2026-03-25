@@ -1244,7 +1244,7 @@ final class HotkeyMonitor {
 
 @MainActor
 final class StatusItemController: NSObject {
-    private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    private let statusItem = NSStatusBar.system.statusItem(withLength: 28)
     private var cancellable: AnyCancellable?
     private weak var appState: AppState?
 
@@ -1341,16 +1341,43 @@ final class StatusItemController: NSObject {
         }
     }
 
+    private func makeSymbolImage(_ symbol: String) -> NSImage {
+        let size = NSSize(width: 22, height: 22)
+        let img = NSImage(size: size, flipped: false) { rect in
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 16, weight: .medium),
+                .foregroundColor: NSColor.black
+            ]
+            let str = symbol as NSString
+            let strSize = str.size(withAttributes: attrs)
+            let pt = NSPoint(
+                x: (rect.width - strSize.width) / 2,
+                y: (rect.height - strSize.height) / 2
+            )
+            str.draw(at: pt, withAttributes: attrs)
+            return true
+        }
+        img.isTemplate = true
+        return img
+    }
+
     private func updateTitle(for phase: AppPhase) {
-        let sym = UserDefaults.standard.hotkeyModifier.symbol
-        statusItem.button?.title = switch phase {
-        case .idle: sym
-        case .recording: "Rec"
-        case .transcribing: "..."
-        case .done: "✓"
-        case .updating: "↓"
-        case .permissions, .missingColi, .installingColi: "!"
-        case .error: "!"
+        guard let button = statusItem.button else { return }
+        switch phase {
+        case .idle:
+            button.image = makeSymbolImage("◎")
+            button.imagePosition = .imageOnly
+            button.title = ""
+        default:
+            button.image = nil
+            button.imagePosition = .noImage
+            button.title = switch phase {
+            case .recording: "Rec"
+            case .transcribing: "..."
+            case .done: "✓"
+            case .updating: "↓"
+            default: "!"
+            }
         }
     }
 
