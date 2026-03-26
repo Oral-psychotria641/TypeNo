@@ -82,9 +82,35 @@ enum TriggerMode: String, Codable, CaseIterable {
     }
 }
 
+enum MicrophoneSelection: Equatable {
+    case automatic
+    case specific(String)
+
+    init(storedValue: String?) {
+        if let storedValue, !storedValue.isEmpty {
+            self = .specific(storedValue)
+        } else {
+            self = .automatic
+        }
+    }
+
+    var uniqueID: String? {
+        switch self {
+        case .automatic: nil
+        case .specific(let uniqueID): uniqueID
+        }
+    }
+}
+
+struct MicrophoneOption: Equatable {
+    let uniqueID: String
+    let localizedName: String
+}
+
 extension UserDefaults {
     private static let modifierKey   = "ai.marswave.typeno.hotkeyModifier"
     private static let triggerKey    = "ai.marswave.typeno.triggerMode"
+    private static let microphoneKey = "ai.marswave.typeno.microphone"
 
     var hotkeyModifier: HotkeyModifier {
         get {
@@ -102,6 +128,17 @@ extension UserDefaults {
             return v
         }
         set { set(newValue.rawValue, forKey: Self.triggerKey) }
+    }
+
+    var microphoneSelection: MicrophoneSelection {
+        get { MicrophoneSelection(storedValue: string(forKey: Self.microphoneKey)) }
+        set {
+            if let storedValue = newValue.uniqueID {
+                set(storedValue, forKey: Self.microphoneKey)
+            } else {
+                removeObject(forKey: Self.microphoneKey)
+            }
+        }
     }
 }
 
@@ -398,7 +435,8 @@ final class AppState: ObservableObject {
     func startRecording() throws {
         transcript = ""
         previousApp = NSWorkspace.shared.frontmostApplication
-        currentRecordingURL = try recorder.start()
+        let microphone = try MicrophoneManager.resolvedDevice(for: UserDefaults.standard.microphoneSelection)
+        currentRecordingURL = try recorder.start(using: microphone)
         recordingElapsedSeconds = 0
         recordingTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.recordingElapsedSeconds += 1 }
@@ -604,6 +642,10 @@ enum TypeNoError: LocalizedError {
     case npmNotFound
     case coliInstallFailed(String)
     case transcriptionFailed(String)
+    case noMicrophoneAvailable
+    case selectedMicrophoneUnavailable
+    case couldNotUseMicrophone(String)
+    case couldNotStartRecording
 
     var errorDescription: String? {
         switch self {
@@ -613,6 +655,10 @@ enum TypeNoError: LocalizedError {
         case .npmNotFound: "Node.js is required. Install it from https://nodejs.org"
         case .coliInstallFailed(let message): "Coli install failed: \(message)"
         case .transcriptionFailed(let message): message
+        case .noMicrophoneAvailable: L("No microphone available", "没有可用的麦克风")
+        case .selectedMicrophoneUnavailable: L("The selected microphone is unavailable", "所选麦克风当前不可用")
+        case .couldNotUseMicrophone(let name): L("Could not use microphone: \(name)", "无法使用麦克风：\(name)")
+        case .couldNotStartRecording: L("Could not start recording", "无法开始录音")
         }
     }
 }
@@ -671,81 +717,180 @@ enum PermissionManager {
     }
 }
 
+// MARK: - Microphone Manager
+
+enum MicrophoneManager {
+    private static let deviceTypes: [AVCaptureDevice.DeviceType] = [.microphone, .external]
+
+    static func availableMicrophones() -> [MicrophoneOption] {
+        let session = AVCaptureDevice.DiscoverySession(
+            deviceTypes: deviceTypes,
+            mediaType: .audio,
+            position: .unspecified
+        )
+
+        var seen = Set<String>()
+        return session.devices
+            .filter { seen.insert($0.uniqueID).inserted }
+            .sorted { lhs, rhs in
+                lhs.localizedName.localizedStandardCompare(rhs.localizedName) == .orderedAscending
+            }
+            .map { device in
+                MicrophoneOption(uniqueID: device.uniqueID, localizedName: device.localizedName)
+            }
+    }
+
+    static func resolvedDevice(for selection: MicrophoneSelection) throws -> AVCaptureDevice {
+        switch selection {
+        case .automatic:
+            if let device = AVCaptureDevice.default(for: .audio) {
+                return device
+            }
+            guard let fallback = availableMicrophones().first.flatMap({ AVCaptureDevice(uniqueID: $0.uniqueID) }) else {
+                throw TypeNoError.noMicrophoneAvailable
+            }
+            return fallback
+
+        case .specific(let uniqueID):
+            guard let device = AVCaptureDevice(uniqueID: uniqueID) else {
+                throw TypeNoError.selectedMicrophoneUnavailable
+            }
+            return device
+        }
+    }
+}
+
 // MARK: - Audio Recorder
 
 @MainActor
-final class AudioRecorder: NSObject, AVAudioRecorderDelegate {
-    private var recorder: AVAudioRecorder?
-    private var recordingURL: URL?
-    private var stopContinuation: CheckedContinuation<URL, Error>?
+final class AudioRecorder: NSObject, AVCaptureFileOutputRecordingDelegate {
+    private final class RecordingContext {
+        let session: AVCaptureSession
+        let output: AVCaptureAudioFileOutput
+        let recordingURL: URL
+        var stopContinuation: CheckedContinuation<URL, Error>?
+        var discardRecordingOnFinish = false
 
-    func start() throws -> URL {
+        init(session: AVCaptureSession, output: AVCaptureAudioFileOutput, recordingURL: URL) {
+            self.session = session
+            self.output = output
+            self.recordingURL = recordingURL
+        }
+    }
+
+    private var activeContexts: [ObjectIdentifier: RecordingContext] = [:]
+    private var currentRecordingID: ObjectIdentifier?
+
+    func start(using microphone: AVCaptureDevice) throws -> URL {
+        guard currentRecordingID == nil else {
+            throw TypeNoError.couldNotStartRecording
+        }
+
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("TypeNo", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
         let url = directory.appendingPathComponent(UUID().uuidString).appendingPathExtension("m4a")
-        let settings: [String: Any] = [
-            AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
-            AVSampleRateKey: 16_000,
-            AVNumberOfChannelsKey: 1,
-            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
-        ]
+        let session = AVCaptureSession()
+        session.beginConfiguration()
 
-        let recorder = try AVAudioRecorder(url: url, settings: settings)
-        recorder.delegate = self
-        recorder.record()
+        let input = try AVCaptureDeviceInput(device: microphone)
+        guard session.canAddInput(input) else {
+            throw TypeNoError.couldNotUseMicrophone(microphone.localizedName)
+        }
+        session.addInput(input)
 
-        self.recorder = recorder
-        self.recordingURL = url
+        let output = AVCaptureAudioFileOutput()
+        guard session.canAddOutput(output) else {
+            throw TypeNoError.couldNotStartRecording
+        }
+        session.addOutput(output)
+        session.commitConfiguration()
+
+        session.startRunning()
+        output.startRecording(to: url, outputFileType: .m4a, recordingDelegate: self)
+
+        let context = RecordingContext(session: session, output: output, recordingURL: url)
+        let contextID = ObjectIdentifier(output)
+        activeContexts[contextID] = context
+        currentRecordingID = contextID
         return url
     }
 
     func stop() async throws -> URL {
-        guard let recordingURL else {
+        guard let contextID = currentRecordingID,
+              let context = activeContexts[contextID] else {
             throw TypeNoError.noRecording
         }
-        guard let recorder else {
-            return recordingURL
+        guard context.output.isRecording else {
+            tearDownCapturePipeline(for: context)
+            activeContexts.removeValue(forKey: contextID)
+            currentRecordingID = nil
+            return context.recordingURL
         }
 
         return try await withCheckedThrowingContinuation { continuation in
-            stopContinuation = continuation
-            recorder.stop()
-            self.recorder = nil
+            context.stopContinuation = continuation
+            context.output.stopRecording()
         }
     }
 
     func cancel() {
-        finishStop(with: .failure(CancellationError()))
-        recorder?.stop()
-        recorder = nil
-        if let recordingURL {
-            try? FileManager.default.removeItem(at: recordingURL)
+        guard let contextID = currentRecordingID,
+              let context = activeContexts[contextID] else {
+            return
         }
-        recordingURL = nil
+
+        currentRecordingID = nil
+        finishStop(for: contextID, with: .failure(CancellationError()))
+
+        let wasRecording = context.output.isRecording
+        context.discardRecordingOnFinish = true
+        context.output.stopRecording()
+        if !wasRecording {
+            tearDownCapturePipeline(for: context)
+            try? FileManager.default.removeItem(at: context.recordingURL)
+            activeContexts.removeValue(forKey: contextID)
+        }
     }
 
-    nonisolated func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
+    nonisolated func fileOutput(_ output: AVCaptureFileOutput, didStartRecordingTo fileURL: URL, from connections: [AVCaptureConnection]) {}
+
+    nonisolated func fileOutput(_ output: AVCaptureFileOutput, didFinishRecordingTo outputFileURL: URL, from connections: [AVCaptureConnection], error: (any Error)?) {
         Task { @MainActor in
-            if flag, let recordingURL {
-                finishStop(with: .success(recordingURL))
-            } else {
-                finishStop(with: .failure(TypeNoError.noRecording))
+            let contextID = ObjectIdentifier(output)
+            guard let context = activeContexts[contextID] else { return }
+
+            defer {
+                if context.discardRecordingOnFinish, let outputURL = outputFileURL as URL? {
+                    try? FileManager.default.removeItem(at: outputURL)
+                }
+                tearDownCapturePipeline(for: context)
+                activeContexts.removeValue(forKey: contextID)
+                if currentRecordingID == contextID {
+                    currentRecordingID = nil
+                }
             }
-            recordingURL = nil
+
+            if let error {
+                finishStop(for: contextID, with: .failure(error))
+            } else {
+                finishStop(for: contextID, with: .success(context.recordingURL))
+            }
         }
     }
 
-    nonisolated func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: (any Error)?) {
-        Task { @MainActor in
-            finishStop(with: .failure(error ?? TypeNoError.noRecording))
-            recordingURL = nil
+    private func tearDownCapturePipeline(for context: RecordingContext) {
+        if context.session.isRunning {
+            context.session.stopRunning()
         }
+        context.session.inputs.forEach { context.session.removeInput($0) }
+        context.session.outputs.forEach { context.session.removeOutput($0) }
     }
 
-    private func finishStop(with result: Result<URL, Error>) {
-        guard let stopContinuation else { return }
-        self.stopContinuation = nil
+    private func finishStop(for contextID: ObjectIdentifier, with result: Result<URL, Error>) {
+        guard let context = activeContexts[contextID],
+              let stopContinuation = context.stopContinuation else { return }
+        context.stopContinuation = nil
         switch result {
         case .success(let url): stopContinuation.resume(returning: url)
         case .failure(let err): stopContinuation.resume(throwing: err)
@@ -1312,6 +1457,14 @@ final class HotkeyMonitor {
 
 @MainActor
 final class StatusItemController: NSObject {
+    private enum MenuTag {
+        static let record = 100
+        static let update = 200
+        static let microphone = 250
+        static let hotkeyBase = 300
+        static let triggerBase = 400
+    }
+
     private let statusItem = NSStatusBar.system.statusItem(withLength: 28)
     private var cancellable: AnyCancellable?
     private weak var appState: AppState?
@@ -1336,6 +1489,7 @@ final class StatusItemController: NSObject {
 
     private func configureMenu() {
         let menu = NSMenu()
+        menu.delegate = self
 
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
         let aboutItem = NSMenuItem(title: "TypeNo  v\(version)", action: nil, keyEquivalent: "")
@@ -1347,7 +1501,7 @@ final class StatusItemController: NSObject {
         let mod = UserDefaults.standard.hotkeyModifier
         let recordItem = NSMenuItem(title: L("Record  \(mod.symbol)", "录音  \(mod.symbol)"), action: #selector(toggleRecording), keyEquivalent: "")
         recordItem.target = self
-        recordItem.tag = 100
+        recordItem.tag = MenuTag.record
         menu.addItem(recordItem)
 
         let transcribeItem = NSMenuItem(title: L("Transcribe File to Clipboard...", "转录文件到剪贴板..."), action: #selector(transcribeFile), keyEquivalent: "")
@@ -1356,13 +1510,19 @@ final class StatusItemController: NSObject {
 
         menu.addItem(NSMenuItem.separator())
 
+        // Microphone sub-menu
+        let microphoneItem = NSMenuItem(title: L("Microphone", "麦克风"), action: nil, keyEquivalent: "")
+        microphoneItem.tag = MenuTag.microphone
+        menu.setSubmenu(makeMicrophoneSubmenu(), for: microphoneItem)
+        menu.addItem(microphoneItem)
+
         // Hotkey sub-menu
         let hotkeyItem = NSMenuItem(title: L("Hotkey", "快捷键"), action: nil, keyEquivalent: "")
         let hotkeySub = NSMenu()
         for (i, m) in HotkeyModifier.allCases.enumerated() {
             let item = NSMenuItem(title: m.label, action: #selector(changeHotkey(_:)), keyEquivalent: "")
             item.target = self
-            item.tag = 300 + i
+            item.tag = MenuTag.hotkeyBase + i
             item.state = m == mod ? .on : .off
             hotkeySub.addItem(item)
         }
@@ -1376,7 +1536,7 @@ final class StatusItemController: NSObject {
         for (i, t) in TriggerMode.allCases.enumerated() {
             let item = NSMenuItem(title: t.label, action: #selector(changeTriggerMode(_:)), keyEquivalent: "")
             item.target = self
-            item.tag = 400 + i
+            item.tag = MenuTag.triggerBase + i
             item.state = t == curTrigger ? .on : .off
             triggerSub.addItem(item)
         }
@@ -1387,7 +1547,7 @@ final class StatusItemController: NSObject {
 
         let updateItem = NSMenuItem(title: L("Check for Updates...", "检查更新..."), action: #selector(checkForUpdates), keyEquivalent: "")
         updateItem.target = self
-        updateItem.tag = 200
+        updateItem.tag = MenuTag.update
         menu.addItem(updateItem)
 
         menu.addItem(NSMenuItem(title: L("Open Privacy Settings", "打开隐私设置"), action: #selector(openPrivacySettings), keyEquivalent: ""))
@@ -1398,8 +1558,54 @@ final class StatusItemController: NSObject {
         statusItem.menu = menu
     }
 
+    private func makeMicrophoneSubmenu() -> NSMenu {
+        let submenu = NSMenu()
+        let selection = UserDefaults.standard.microphoneSelection
+
+        let automaticItem = NSMenuItem(title: L("Automatic", "自动"), action: #selector(changeMicrophone(_:)), keyEquivalent: "")
+        automaticItem.target = self
+        automaticItem.state = selection == .automatic ? .on : .off
+        submenu.addItem(automaticItem)
+
+        let microphones = MicrophoneManager.availableMicrophones()
+        if microphones.isEmpty {
+            submenu.addItem(NSMenuItem.separator())
+            let unavailableItem = NSMenuItem(title: L("No microphones found", "未找到麦克风"), action: nil, keyEquivalent: "")
+            unavailableItem.isEnabled = false
+            submenu.addItem(unavailableItem)
+            return submenu
+        }
+
+        submenu.addItem(NSMenuItem.separator())
+
+        for microphone in microphones {
+            let item = NSMenuItem(title: microphone.localizedName, action: #selector(changeMicrophone(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = microphone.uniqueID
+            item.state = selection.uniqueID == microphone.uniqueID ? .on : .off
+            submenu.addItem(item)
+        }
+
+        if case .specific(let selectedID) = selection,
+           microphones.contains(where: { $0.uniqueID == selectedID }) == false {
+            submenu.addItem(NSMenuItem.separator())
+            let unavailableItem = NSMenuItem(title: L("Selected microphone unavailable", "已选麦克风不可用"), action: nil, keyEquivalent: "")
+            unavailableItem.isEnabled = false
+            unavailableItem.state = .on
+            submenu.addItem(unavailableItem)
+        }
+
+        return submenu
+    }
+
+    private func refreshMicrophoneSubmenu() {
+        guard let menu = statusItem.menu,
+              let microphoneItem = menu.item(withTag: MenuTag.microphone) else { return }
+        menu.setSubmenu(makeMicrophoneSubmenu(), for: microphoneItem)
+    }
+
     private func updateRecordMenuItem(for phase: AppPhase) {
-        guard let item = statusItem.menu?.item(withTag: 100) else { return }
+        guard let item = statusItem.menu?.item(withTag: MenuTag.record) else { return }
         let sym = UserDefaults.standard.hotkeyModifier.symbol
         switch phase {
         case .recording:
@@ -1450,7 +1656,7 @@ final class StatusItemController: NSObject {
     }
 
     @objc private func changeHotkey(_ sender: NSMenuItem) {
-        let idx = sender.tag - 300
+        let idx = sender.tag - MenuTag.hotkeyBase
         guard let mod = HotkeyModifier.allCases[safe: idx] else { return }
         UserDefaults.standard.hotkeyModifier = mod
         // Update checkmarks
@@ -1463,8 +1669,17 @@ final class StatusItemController: NSObject {
         NotificationCenter.default.post(name: .hotkeyConfigChanged, object: nil)
     }
 
+    @objc private func changeMicrophone(_ sender: NSMenuItem) {
+        if let uniqueID = sender.representedObject as? String {
+            UserDefaults.standard.microphoneSelection = .specific(uniqueID)
+        } else {
+            UserDefaults.standard.microphoneSelection = .automatic
+        }
+        refreshMicrophoneSubmenu()
+    }
+
     @objc private func changeTriggerMode(_ sender: NSMenuItem) {
-        let idx = sender.tag - 400
+        let idx = sender.tag - MenuTag.triggerBase
         guard let mode = TriggerMode.allCases[safe: idx] else { return }
         UserDefaults.standard.triggerMode = mode
         sender.menu?.items.forEach { $0.state = $0.tag == sender.tag ? .on : .off }
@@ -1484,7 +1699,7 @@ final class StatusItemController: NSObject {
     }
 
     func setUpdateAvailable(_ version: String) {
-        guard let item = statusItem.menu?.item(withTag: 200) else { return }
+        guard let item = statusItem.menu?.item(withTag: MenuTag.update) else { return }
         item.title = L("Update Available (v\(version))", "有新版本 (v\(version))")
     }
 
@@ -1513,7 +1728,11 @@ final class StatusItemController: NSObject {
     }
 }
 
-extension StatusItemController: NSWindowDelegate {
+extension StatusItemController: NSWindowDelegate, NSMenuDelegate {
+    func menuWillOpen(_ menu: NSMenu) {
+        refreshMicrophoneSubmenu()
+    }
+
     func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
         guard let items = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL],
               let url = items.first,
