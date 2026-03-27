@@ -34,13 +34,22 @@ TypeNo is signed and notarized by Apple — it should open without any warnings.
 
 ### Install the speech engine
 
-TypeNo uses [coli](https://github.com/marswaveai/coli) for local speech recognition:
+TypeNo uses [coli](https://github.com/marswaveai/coli) for local speech recognition.
+
+**Prerequisites:**
+- [Node.js](https://nodejs.org) (LTS recommended — install directly from nodejs.org for best compatibility)
+- [ffmpeg](https://ffmpeg.org) — required for audio conversion: `brew install ffmpeg`
 
 ```bash
 npm install -g @marswave/coli
 ```
 
 If Coli is missing, TypeNo will show an in-app setup prompt with the install command.
+
+> **Node 24+:** If you get a `sherpa-onnx-node` error, build from source:
+> ```bash
+> npm install -g @marswave/coli --build-from-source
+> ```
 
 ### First Launch
 
@@ -49,6 +58,16 @@ TypeNo needs two one-time permissions:
 - **Accessibility** — to paste text into apps
 
 The app will guide you through granting these on first launch.
+
+### Troubleshooting: Coli Model Download Fails
+
+The speech model is downloaded from GitHub. If GitHub is inaccessible in your network, the download will fail.
+
+**Fix:** Enable **TUN mode** (also called Enhanced Mode) in your proxy tool to ensure all system-level traffic is routed correctly. Then retry the install:
+
+```bash
+npm install -g @marswave/coli
+```
 
 ### Troubleshooting: Accessibility Permission Not Working
 

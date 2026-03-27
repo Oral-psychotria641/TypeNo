@@ -1041,6 +1041,12 @@ final class ColiASRService: @unchecked Sendable {
                     let existingPath = env["PATH"] ?? "/usr/bin:/bin"
                     env["PATH"] = (extraPaths + [existingPath]).joined(separator: ":")
 
+                    // Suppress npm update-notifier network calls — these fire on every coli
+                    // invocation and crash (unhandled rejection) when github.com is unreachable
+                    // (common in China and other restricted networks).
+                    env["NO_UPDATE_NOTIFIER"] = "1"
+                    env["npm_config_update_notifier"] = "false"
+
                     // Inject macOS system proxy settings so Node.js fetch (undici) can reach
                     // the internet when a system proxy is configured (e.g. via System Settings).
                     // GUI apps don't source shell profiles, so HTTP_PROXY / HTTPS_PROXY are
@@ -1125,7 +1131,7 @@ final class ColiASRService: @unchecked Sendable {
 
                     guard process.terminationStatus == 0 else {
                         let msg = errorOutput.trimmingCharacters(in: .whitespacesAndNewlines)
-                        throw TypeNoError.transcriptionFailed(msg.isEmpty ? "coli failed" : msg)
+                        throw TypeNoError.transcriptionFailed(Self.diagnoseColiError(msg))
                     }
 
                     continuation.resume(returning: output.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -1175,6 +1181,22 @@ final class ColiASRService: @unchecked Sendable {
         return nil
     }
 
+    /// Returns a user-friendly error message for common coli failure modes.
+    private static func diagnoseColiError(_ stderr: String) -> String {
+        if stderr.isEmpty { return "coli failed" }
+        let lower = stderr.lowercased()
+        if lower.contains("env: node") || lower.contains("env:node") || (lower.contains("no such file") && lower.contains("node")) {
+            return "Node.js not found. Make sure Node.js is installed (nodejs.org) and restart TypeNo."
+        }
+        if lower.contains("ffmpeg") && (lower.contains("not found") || lower.contains("no such file") || lower.contains("command not found")) {
+            return "ffmpeg is required but not installed. Run: brew install ffmpeg"
+        }
+        if lower.contains("sherpa-onnx-node") || lower.contains("could not find sherpa") {
+            return "Node.js version incompatibility with native addon. Try: npm install -g @marswave/coli --build-from-source"
+        }
+        return stderr
+    }
+
     private static func timeoutDiagnostics(stdout: String, stderr: String) -> String {
         let combined = [stdout, stderr]
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -1183,6 +1205,11 @@ final class ColiASRService: @unchecked Sendable {
 
         if combined.isEmpty {
             return "Transcription timed out. Coli may still be downloading its first model, or the network/proxy may be blocking GitHub."
+        }
+
+        let lower = combined.lowercased()
+        if lower.contains("ffmpeg") && (lower.contains("not found") || lower.contains("no such file") || lower.contains("command not found")) {
+            return "Transcription failed: ffmpeg is required but not installed. Run: brew install ffmpeg"
         }
 
         let condensed = combined

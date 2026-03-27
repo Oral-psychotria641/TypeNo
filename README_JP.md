@@ -33,13 +33,22 @@ TypeNo は Apple の署名と公証済みです。警告なしでそのまま開
 
 ### 音声認識エンジンをインストール
 
-TypeNo はローカル音声認識に [coli](https://github.com/marswaveai/coli) を使用します：
+TypeNo はローカル音声認識に [coli](https://github.com/marswaveai/coli) を使用します。
+
+**前提条件：**
+- [Node.js](https://nodejs.org)（LTS 推奨 — nodejs.org から直接インストールすると互換性が高い）
+- [ffmpeg](https://ffmpeg.org) — 音声変換に必要：`brew install ffmpeg`
 
 ```bash
 npm install -g @marswave/coli
 ```
 
 未インストールの場合、アプリ内でガイダンスが表示されます。
+
+> **Node 24+：** `sherpa-onnx-node` エラーが出る場合はソースからビルドしてください：
+> ```bash
+> npm install -g @marswave/coli --build-from-source
+> ```
 
 ### 初回起動
 
@@ -48,6 +57,16 @@ TypeNo には一度だけ次の2つの権限が必要です：
 - **アクセシビリティ** — テキストをアプリに貼り付けるため
 
 初回起動時にアプリが権限付与を案内します。
+
+### トラブルシューティング：Coli モデルのダウンロードが失敗する
+
+音声モデルは GitHub からダウンロードされます。ネットワークが GitHub にアクセスできない場合、ダウンロードに失敗します。
+
+**対処法：** プロキシツールで **TUN モード**（拡張モードとも呼ばれる）を有効にして、システムレベルのトラフィックが正しくルーティングされるようにしてください。その後、インストールを再試行してください：
+
+```bash
+npm install -g @marswave/coli
+```
 
 ### トラブルシューティング：アクセシビリティ権限が有効にならない
 
